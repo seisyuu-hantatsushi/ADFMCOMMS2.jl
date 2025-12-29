@@ -1,0 +1,13 @@
+name = "ADFMCOMMS2"
+uuid = "c4281f09-985f-44f9-b7bb-ee6f15283c25"
+authors = ["TANIGUCHI,Kazushige <taniguchi.kazushige@gmail.com>"]
+version = "1.0.0-DEV"
+
+[compat]
+julia = "1.12"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
