@@ -1,10 +1,22 @@
 name = "ADFMCOMMS2"
 uuid = "c4281f09-985f-44f9-b7bb-ee6f15283c25"
+version = "0.0.1"
 authors = ["TANIGUCHI,Kazushige <taniguchi.kazushige@gmail.com>"]
-version = "1.0.0-DEV"
+
+[deps]
+Libdl = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
+Preferences = "21216c6a-2e73-6563-6e65-726566657250"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Reexport = "189a3867-3050-52da-a836-e630ba90ab69"
+libiio_jll = "8da1a5bb-246c-59c5-9ba1-a6804f8e92f0"
 
 [compat]
+Libdl = "1.11.0"
+Preferences = "1.5.1"
+Printf = "1.11.0"
+Reexport = "1.2.2"
 julia = "1.12"
+libiio_jll = "0.24.0"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
