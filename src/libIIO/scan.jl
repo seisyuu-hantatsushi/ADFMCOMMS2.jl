@@ -108,6 +108,15 @@ function C_iio_create_scan_context(backend::String, flags::UInt32=UInt32(0))
     return scan_context;
 end
 
+function C_iio_create_scan_context(::Nothing, flags::UInt32=UInt32(0))
+    @assert_null_pointer scan_context = ccall(
+        (:iio_create_scan_context, libIIO),
+        Ptr{iio_scan_context}, (Ptr{Cchar}, Cuint),
+        C_NULL, flags
+    );
+    return scan_context;
+end
+
 """
     C_iio_scan_block_destroy(scan_block)
 
