@@ -81,6 +81,12 @@ function rxTask!(adapter::SDR_RxAdapter{ComplexF32})
     try
         while adapter.running[]
             read_size = C_iio_buffer_refill(rxCtx.rxBuf)
+            if read_size < 0
+                if !adapter.running[]
+                    break
+                end
+                error("Failed to refill rx buffer. ", Base.Libc.strerror(-1*read_size))
+            end
             head = C_iio_buffer_first(rxCtx.rxBuf, rxCtx.iCh)
             tail = C_iio_buffer_end(rxCtx.rxBuf)
             if isready(dataBuffer.freeQ)
@@ -119,6 +125,12 @@ function rxTask!(adapter::SDR_RxAdapter{Complex{Int16}})
     try
         while adapter.running[]
             read_size = C_iio_buffer_refill(rxCtx.rxBuf)
+            if read_size < 0
+                if !adapter.running[]
+                    break
+                end
+                error("Failed to refill rx buffer. ", Base.Libc.strerror(-1*read_size))
+            end
             head = C_iio_buffer_first(rxCtx.rxBuf, rxCtx.iCh)
             tail = C_iio_buffer_end(rxCtx.rxBuf)
             if isready(dataBuffer.freeQ)
@@ -181,7 +193,7 @@ function setPhyCfg(phydev::Ptr{iio_device}, config::RxConfig)
     if (ret < 0) error("Failed to set sampling_frequency $config.samplingRate in $label at $PHY_DEVICE_NAME. ", Base.Libc.strerror(-1*ret)); end
 
     rxphy_lo = C_iio_device_find_channel(phydev, "altvoltage0", true)
-    if(rxphy_ch == C_NULL) error("Failed to find altvoltage0 in $PHY_DEVICE_NAME."); end
+    if(rxphy_lo == C_NULL) error("Failed to find altvoltage0 in $PHY_DEVICE_NAME."); end
 
     ret = C_iio_channel_attr_write_longlong(rxphy_lo, "frequency", Int64(config.carrierFreq))
     if (ret < 0) error("Failed to set lo frequency altvoltage0 at $PHY_DEVICE_NAME. ", Base.Libc.strerror(-1*ret)); end
@@ -270,7 +282,7 @@ function SDR_RxAdapter(uri::String, frequency::UInt64, samplerate::UInt32, bandw
                                openAD936x(uri,rxcfg))
     finalizer(adapter) do x
         try
-            close(x)
+            close!(x)
         catch
         end
     end
@@ -304,10 +316,16 @@ function close!(adapter::SDR_RxAdapter)
         return nothing
     end
     adapter.running[] = false
+    C_iio_buffer_cancel(adapter.rxCtx.rxBuf)
     if adapter.task !== nothing
-        try
-            wait(adapter.task)
-        catch
+        Base.disable_sigint() do
+            try
+                wait(adapter.task)
+            catch e
+                if !(e isa InterruptException)
+                    rethrow()
+                end
+            end
         end
     end
 
