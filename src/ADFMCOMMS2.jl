@@ -79,40 +79,43 @@ function rxTask!(adapter::SDR_RxAdapter{ComplexF32})
     rxCtx = adapter.rxCtx
     dataBuffer = adapter.dataBuffer
     try
-        while adapter.running[]
-            read_size = C_iio_buffer_refill(rxCtx.rxBuf)
-            if read_size < 0
-                if !adapter.running[]
-                    break
+        Base.disable_sigint() do
+            while adapter.running[]
+                read_size = C_iio_buffer_refill(rxCtx.rxBuf)
+                if read_size < 0
+                    if !adapter.running[]
+                        break
+                    end
+                    error("Failed to refill rx buffer. ", Base.Libc.strerror(-1*read_size))
                 end
-                error("Failed to refill rx buffer. ", Base.Libc.strerror(-1*read_size))
+                head = C_iio_buffer_first(rxCtx.rxBuf, rxCtx.iCh)
+                tail = C_iio_buffer_end(rxCtx.rxBuf)
+                if isready(dataBuffer.freeQ)
+                    index = take!(dataBuffer.freeQ)
+                    nbytes = Int(tail - head)
+                    nsamples_i16 = nbytes ÷ sizeof(Int16)
+                    ncomplex = nsamples_i16 ÷ 2
+                    src_i16 = unsafe_wrap(Vector{Int16}, Ptr{Int16}(head), nsamples_i16; own=false)
+                    buf = dataBuffer.bufs[index]
+                    if length(buf) < ncomplex
+                        resize!(buf, ncomplex)
+                    end
+                    scale = Float32(1 / 2048)
+                    @inbounds for i in 1:ncomplex
+                        i_s = src_i16[2i - 1]
+                        q_s = src_i16[2i]
+                        buf[i] = ComplexF32(Float32(i_s) * scale, Float32(q_s) * scale)
+                    end
+                    put!(dataBuffer.fullQ, index)
+                else
+                    error("Drop IQdata")
+                end
+                yield()
             end
-            head = C_iio_buffer_first(rxCtx.rxBuf, rxCtx.iCh)
-            tail = C_iio_buffer_end(rxCtx.rxBuf)
-            if isready(dataBuffer.freeQ)
-                index = take!(dataBuffer.freeQ)
-                nbytes = Int(tail - head)
-                nsamples_i16 = nbytes ÷ sizeof(Int16)
-                ncomplex = nsamples_i16 ÷ 2
-                src_i16 = unsafe_wrap(Vector{Int16}, Ptr{Int16}(head), nsamples_i16; own=false)
-                buf = dataBuffer.bufs[index]
-                if length(buf) < ncomplex
-                    resize!(buf, ncomplex)
-                end
-                scale = Float32(1 / 2048)
-                @inbounds for i in 1:ncomplex
-                    i_s = src_i16[2i - 1]
-                    q_s = src_i16[2i]
-                    buf[i] = ComplexF32(Float32(i_s) * scale, Float32(q_s) * scale)
-                end
-                put!(dataBuffer.fullQ, index)
-            else
-                error("Drop IQdata")
-            end
-            yield()
         end
     catch e
-        println(e)
+        adapter.running[] = false
+        println("ADFMCOMMS2 task:", e)
     end
     println("end rxTask")
     return nothing
@@ -123,39 +126,42 @@ function rxTask!(adapter::SDR_RxAdapter{Complex{Int16}})
     rxCtx = adapter.rxCtx
     dataBuffer = adapter.dataBuffer
     try
-        while adapter.running[]
-            read_size = C_iio_buffer_refill(rxCtx.rxBuf)
-            if read_size < 0
-                if !adapter.running[]
-                    break
+        Base.disable_sigint() do
+            while adapter.running[]
+                read_size = C_iio_buffer_refill(rxCtx.rxBuf)
+                if read_size < 0
+                    if !adapter.running[]
+                        break
+                    end
+                    error("Failed to refill rx buffer. ", Base.Libc.strerror(-1*read_size))
                 end
-                error("Failed to refill rx buffer. ", Base.Libc.strerror(-1*read_size))
+                head = C_iio_buffer_first(rxCtx.rxBuf, rxCtx.iCh)
+                tail = C_iio_buffer_end(rxCtx.rxBuf)
+                if isready(dataBuffer.freeQ)
+                    index = take!(dataBuffer.freeQ)
+                    nbytes = Int(tail - head)
+                    nsamples_i16 = nbytes ÷ sizeof(Int16)
+                    ncomplex = nsamples_i16 ÷ 2
+                    src_i16 = unsafe_wrap(Vector{Int16}, Ptr{Int16}(head), nsamples_i16; own=false)
+                    buf = dataBuffer.bufs[index]
+                    if length(buf) < ncomplex
+                        resize!(buf, ncomplex)
+                    end
+                    @inbounds for i in 1:ncomplex
+                        i_s = src_i16[2i - 1]
+                        q_s = src_i16[2i]
+                        buf[i] = Complex{Int16}(i_s, q_s)
+                    end
+                    put!(dataBuffer.fullQ, index)
+                else
+                    error("Drop IQdata")
+                end
+                yield()
             end
-            head = C_iio_buffer_first(rxCtx.rxBuf, rxCtx.iCh)
-            tail = C_iio_buffer_end(rxCtx.rxBuf)
-            if isready(dataBuffer.freeQ)
-                index = take!(dataBuffer.freeQ)
-                nbytes = Int(tail - head)
-                nsamples_i16 = nbytes ÷ sizeof(Int16)
-                ncomplex = nsamples_i16 ÷ 2
-                src_i16 = unsafe_wrap(Vector{Int16}, Ptr{Int16}(head), nsamples_i16; own=false)
-                buf = dataBuffer.bufs[index]
-                if length(buf) < ncomplex
-                    resize!(buf, ncomplex)
-                end
-                @inbounds for i in 1:ncomplex
-                    i_s = src_i16[2i - 1]
-                    q_s = src_i16[2i]
-                    buf[i] = Complex{Int16}(i_s, q_s)
-                end
-                put!(dataBuffer.fullQ, index)
-            else
-                error("Drop IQdata")
-            end
-            yield()
         end
     catch e
-        println(e)
+        adapter.running[] = false
+        println("ADFMCOMMS2 task:", e)
     end
     println("end rxTask")
     return nothing
@@ -286,7 +292,7 @@ function SDR_RxAdapter(uri::String, frequency::UInt64, samplerate::UInt32, bandw
         catch
         end
     end
-    adapter.task = @async rxTask!(adapter)
+    adapter.task = Threads.@spawn rxTask!(adapter)
     return adapter
 end
 
@@ -298,6 +304,12 @@ function SDR_RxAdapter(::String, ::UInt64, ::UInt32, ::UInt32, ::Type{T};
 end
 
 function recv!(adapter::SDR_RxAdapter, recv_buffer::AbstractVector{T}) where{T}
+
+    if !adapter.running[]
+        eprintln("adapter is closed\n")
+        return -1
+    end
+
     dataBuffer = adapter.dataBuffer
     index = take!(dataBuffer.fullQ)
     src = dataBuffer.bufs[index]
@@ -309,12 +321,15 @@ function recv!(adapter::SDR_RxAdapter, recv_buffer::AbstractVector{T}) where{T}
     copyto!(recv_buffer, 1, src, 1, n)
     put!(dataBuffer.freeQ, index)
     return n
+
 end
 
 function close!(adapter::SDR_RxAdapter)
+
     if !adapter.running[]
         return nothing
     end
+
     adapter.running[] = false
     C_iio_buffer_cancel(adapter.rxCtx.rxBuf)
     if adapter.task !== nothing
@@ -332,6 +347,10 @@ function close!(adapter::SDR_RxAdapter)
     closeAD936x!(adapter.rxCtx)
     
     return nothing
+end
+
+function SamplingFrameSize(adapter::SDR_RxAdapter)
+    return adapter.rxCtx.rxConfig.sampleBufferSize
 end
 
 
