@@ -27,9 +27,12 @@ mutable struct ViewContext{T}
     yobs::Observable{Vector{Float64}}
     screen::Union{Nothing, GLMakie.Screen}
     freq_view::Vector{Float64}
-    task::Task
+    main_task::Task
+    worker::Task
+    update_task::Task
     freeQ::Channel{Vector{ComplexF32}}
     fullQ::Channel{Tuple{Vector{ComplexF32}, Int}}
+    resultQ::Channel{Vector{Float64}}
 end
 
 function hann_window_coeffs(ns::UnitRange{Int}, denom)
@@ -86,7 +89,7 @@ function process_samples!(context::ViewContext{ComplexF32}, samples::AbstractVec
             spec = abs.(fft(context.tmp))
             spec = fftshift(spec)
             spec_db = 20 .* log10.(spec ./ fft_size .+ eps(Float32))
-            context.yobs[] = spec_db[context.idx_lo:context.idx_hi]
+            put!(context.resultQ, Float64.(spec_db[context.idx_lo:context.idx_hi]))
             context.fft_pos = 1
         end
     end
@@ -127,13 +130,27 @@ function CreateView(::Type{T}, inputSamplingRate::UInt64, numberOfFFTSampling::U
     yobs = Observable(fill(-120.0, length(freq_view)))
     lines!(ax, freq_view, yobs; linewidth = 1)
     ylims!(ax, -120, 20)
-    screen = display(fig)
+    main_task = current_task()
+    renderloop = screen -> begin
+        try
+            GLMakie.renderloop(screen)
+        catch e
+            if e isa InterruptException
+                Base.throwto(main_task, e)
+                return
+            end
+            rethrow()
+        end
+    end
+    screen = GLMakie.Screen(fig.scene; renderloop = renderloop)
+    display(screen, fig)
     if screen !== nothing
         GLMakie.set_title!(screen, title)
     end
 
     freeQ = Channel{Vector{ComplexF32}}(poolsize)
     fullQ = Channel{Tuple{Vector{ComplexF32}, Int}}(poolsize)
+    resultQ = Channel{Vector{Float64}}(poolsize)
     for _ in 1:poolsize
         put!(freeQ, Vector{ComplexF32}(undef, frame_size))
     end
@@ -149,10 +166,14 @@ function CreateView(::Type{T}, inputSamplingRate::UInt64, numberOfFFTSampling::U
                        yobs,
                        screen,
                        freq_view,
+                       main_task,
+                       Task(() -> nothing),
                        Task(() -> nothing),
                        freeQ,
-                       fullQ)
-    view.task = @async task!(view)
+                       fullQ,
+                       resultQ)
+    view.update_task = @async update_task!(view)
+    view.worker = Threads.@spawn task!(view)
     return view
 end
 
@@ -183,6 +204,23 @@ function task!(context::ViewContext{ComplexF32})
     return nothing
 end
 
+function update_task!(context::ViewContext{ComplexF32})
+    try
+        while context.running[]
+            if isready(context.resultQ)
+                context.yobs[] = take!(context.resultQ)
+            else
+                yield()
+            end
+        end
+    catch e
+        if !(e isa InterruptException)
+            println(e)
+        end
+    end
+    return nothing
+end
+
 function enqueue!(context::ViewContext{ComplexF32}, samples::AbstractVector{ComplexF32}, n::Integer)
     if !context.running[] || n <= 0
         return false
@@ -199,24 +237,8 @@ end
 function stop!(context::ViewContext)
     println("FFTView.stop()")
     context.running[] = false
-    if context.screen !== nothing
-        try
-            Base.close(context.screen; reuse = false)
-        catch e
-            if !(e isa InterruptException)
-                println(e)
-            end
-        end
-        try
-            GLMakie.destroy!(context.screen)
-        catch e
-            if !(e isa InterruptException)
-                println(e)
-            end
-        end
-        context.screen = nothing
-    end
-    wait(context.task)
+    wait(context.worker)
+    wait(context.update_task)
     return nothing
 end
 
