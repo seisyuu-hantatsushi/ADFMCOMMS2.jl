@@ -292,7 +292,7 @@ function SDR_RxAdapter(uri::String, frequency::UInt64, samplerate::UInt32, bandw
         catch
         end
     end
-    adapter.task = Threads.@spawn rxTask!(adapter)
+    
     return adapter
 end
 
@@ -301,6 +301,31 @@ function SDR_RxAdapter(::String, ::UInt64, ::UInt32, ::UInt32, ::Type{T};
                        sampleBufferSize::UInt64 = UInt64(64*1024),
                        ) where {T}
     error("Unsupported sample type: $T (only ComplexF32 or Complex{Int16})")
+end
+
+function start!(adapter::SDR_RxAdapter{T}) where{T}
+    adapter.task = Threads.@spawn rxTask!(adapter)
+    return nothing
+end
+
+function stop!(adapter::SDR_RxAdapter{T}) where {T}
+    if !adapter.running[]
+        return nothing
+    end
+
+    adapter.running[] = false
+    C_iio_buffer_cancel(adapter.rxCtx.rxBuf)
+    if adapter.task !== nothing
+        Base.disable_sigint() do
+            try
+                wait(adapter.task)
+            catch e
+                if !(e isa InterruptException)
+                    rethrow()
+                end
+            end
+        end
+    end
 end
 
 function recv!(adapter::SDR_RxAdapter, recv_buffer::AbstractVector{T}) where{T}
@@ -324,25 +349,9 @@ function recv!(adapter::SDR_RxAdapter, recv_buffer::AbstractVector{T}) where{T}
 
 end
 
-function close!(adapter::SDR_RxAdapter)
+function close!(adapter::SDR_RxAdapter{T}) where {T}
 
-    if !adapter.running[]
-        return nothing
-    end
-
-    adapter.running[] = false
-    C_iio_buffer_cancel(adapter.rxCtx.rxBuf)
-    if adapter.task !== nothing
-        Base.disable_sigint() do
-            try
-                wait(adapter.task)
-            catch e
-                if !(e isa InterruptException)
-                    rethrow()
-                end
-            end
-        end
-    end
+    stop!(adapter)
 
     closeAD936x!(adapter.rxCtx)
     
