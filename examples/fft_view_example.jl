@@ -2,7 +2,6 @@
 include("fft_view.jl")
 
 using ADFMCOMMS2
-using GLMakie
 
 const ADC_SamplingRate   = 1_200_000 # A/D Sampling Rate 1.2MHz
 const BandWidth          =   800_000 # Band width 800KHz

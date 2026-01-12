@@ -15,6 +15,31 @@ mutable struct Parameter
     window::WindowFunctions
 end
 
+mutable struct FrameBuffer{T}
+    store_size::Int
+    buf::Vector{T}
+end
+
+function FrameBuffer(::Type{T}, frame_size::Int) where {T}
+    return FrameBuffer(0, Vector{T}(undef, frame_size))
+end
+
+mutable struct RingFrameBuffer{T}
+    frame_size::Int
+    bufs::Vector{FrameBuffer{T}}
+    freeQ::Channel{Int}
+    fullQ::Channel{Int}
+end
+
+function RingFrameBuffer(::Type{T}, frame_size::Int, poolsize::Int) where {T}
+    freeQ = Channel{Int}(poolsize)
+    fullQ = Channel{Int}(poolsize)
+    for i in 1:poolsize
+        put!(freeQ, i)
+    end
+    return RingFrameBuffer(frame_size, [FrameBuffer(T, frame_size) for _ in 1:poolsize], freeQ, fullQ)
+end
+
 mutable struct ViewContext{T}
     running::Base.Threads.Atomic{Bool}
     parameter::Parameter
@@ -27,11 +52,11 @@ mutable struct ViewContext{T}
     yobs::Observable{Vector{Float64}}
     screen::Union{Nothing, GLMakie.Screen}
     freq_view::Vector{Float64}
-    main_task::Task
-    worker::Task
-    update_task::Task
-    freeQ::Channel{Vector{ComplexF32}}
-    fullQ::Channel{Tuple{Vector{ComplexF32}, Int}}
+    main_task::Union{Nothing,Task}
+    worker::Union{Nothing,Task}
+    update_task::Union{Nothing,Task}
+    ringbuffer::RingFrameBuffer{T}   
+    holdbuf::Union{Nothing, Int}
     resultQ::Channel{Vector{Float64}}
 end
 
@@ -142,19 +167,15 @@ function CreateView(::Type{T}, inputSamplingRate::UInt64, numberOfFFTSampling::U
             rethrow()
         end
     end
+
     screen = GLMakie.Screen(fig.scene; renderloop = renderloop)
     display(screen, fig)
     if screen !== nothing
         GLMakie.set_title!(screen, title)
     end
 
-    freeQ = Channel{Vector{ComplexF32}}(poolsize)
-    fullQ = Channel{Tuple{Vector{ComplexF32}, Int}}(poolsize)
     resultQ = Channel{Vector{Float64}}(poolsize)
-    for _ in 1:poolsize
-        put!(freeQ, Vector{ComplexF32}(undef, frame_size))
-    end
-
+    
     view = ViewContext(Base.Threads.Atomic{Bool}(true),
                        Parameter(inputSamplingRate, window),
                        Vector{T}(undef, fft_size),
@@ -167,10 +188,10 @@ function CreateView(::Type{T}, inputSamplingRate::UInt64, numberOfFFTSampling::U
                        screen,
                        freq_view,
                        main_task,
-                       Task(() -> nothing),
-                       Task(() -> nothing),
-                       freeQ,
-                       fullQ,
+                       nothing,
+                       nothing,
+                       RingFrameBuffer(T, fft_size, poolsize),
+                       nothing,
                        resultQ)
     view.update_task = @async update_task!(view)
     view.worker = Threads.@spawn task!(view)
@@ -181,19 +202,21 @@ function isopen(context::ViewContext)
     return context.screen === nothing || GLMakie.isopen(context.screen)
 end
 
-function task!(context::ViewContext{ComplexF32})
+function task!(context::ViewContext{T}) where {T}
     try
         while context.running[]
             if context.screen !== nothing && !isopen(context)
                 context.running[] = false
                 break
             end
-            if isready(context.fullQ)
-                buf, n = take!(context.fullQ)
-                process_samples!(context, buf, n)
-                put!(context.freeQ, buf)
+            if isready(context.ringbuffer.fullQ)
+                rd_index = take!(context.ringbuffer.fullQ)
+                rd_buffer = context.ringbuffer.bufs[rd_index]
+                process_samples!(context, rd_buffer.buf, rd_buffer.store_size)
+                rd_buffer.store_size = 0
+                put!(context.ringbuffer.freeQ, rd_index)
             else
-                sleep(0.001)
+                yield()
             end
         end
     catch e
@@ -204,7 +227,7 @@ function task!(context::ViewContext{ComplexF32})
     return nothing
 end
 
-function update_task!(context::ViewContext{ComplexF32})
+function update_task!(context::ViewContext{T}) where{T}
     try
         while context.running[]
             if isready(context.resultQ)
@@ -221,17 +244,38 @@ function update_task!(context::ViewContext{ComplexF32})
     return nothing
 end
 
-function enqueue!(context::ViewContext{ComplexF32}, samples::AbstractVector{ComplexF32}, n::Integer)
-    if !context.running[] || n <= 0
+function enqueue!(context::ViewContext{T}, samples::AbstractVector{T}, samples_size::Int) where {T}
+    if !context.running[] ||  samples_size <= 0
         return false
     end
-    if !isready(context.freeQ)
-        return false
+
+    actual_size = min(samples_size, length(samples))
+    if actual_size <= 0
+        return 0
     end
-    buf = take!(context.freeQ)
-    copyto!(buf, 1, samples, 1, n)
-    put!(context.fullQ, (buf, n))
-    return true
+    remain_size = actual_size
+
+    while remain_size > 0
+        if context.holdbuf == nothing && isready(context.ringbuffer.freeQ)
+            context.holdbuf = take!(context.ringbuffer.freeQ)
+        end
+
+        if context.holdbuf == nothing
+            return -1
+        else
+            write_frame = context.ringbuffer.bufs[context.holdbuf]
+            copy_size = min(remain_size, context.ringbuffer.frame_size - write_frame.store_size)
+            copyto!(write_frame.buf, write_frame.store_size + 1, samples, actual_size-remain_size+1, copy_size)
+            write_frame.store_size += copy_size
+            remain_size -= copy_size
+            if write_frame.store_size >= context.ringbuffer.frame_size
+                put!(context.ringbuffer.fullQ, context.holdbuf)
+                context.holdbuf = nothing
+            end
+        end
+    end
+
+    return samples_size
 end
 
 function stop!(context::ViewContext)
