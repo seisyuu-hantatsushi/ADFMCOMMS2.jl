@@ -1,3 +1,16 @@
+# Usage:
+#   julia fm.jl -c 77.8M -o fm.wav -s 10
+#   julia fm.jl -c 77.8M -o audio
+#
+# Description:
+#   Tune to an FM carrier with ADFMCOMMS2, demodulate, and either save to WAV or
+#   play audio in real time. Frequency arguments accept SI suffixes (k, M, G).
+#
+# Options:
+#   -c, --carrierFreq  Center frequency (required)
+#   -o, --output       Output WAV path or "audio" for realtime playback (default: fm.wav)
+#   -s, -t, --seconds  Capture duration in seconds (optional)
+
 using ADFMCOMMS2
 
 const ADC_FS = 1_200_000

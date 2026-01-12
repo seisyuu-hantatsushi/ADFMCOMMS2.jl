@@ -80,24 +80,32 @@ function hann_window_coeffs(ns::UnitRange{Int}, denom)
     return 0.5f0 .* (1 .- cos.(2f0 * Float32(π) .* Float32.(ns) ./ denom))
 end
 
+function blackman_window_coeffs(ns::UnitRange{Int}, denom)
+    a0 = 0.42f0
+    a1 = 0.5f0
+    a2 = 0.08f0
+    phase = 2f0 * Float32(π) .* Float32.(ns) ./ denom
+    return a0 .- a1 .* cos.(phase) .+ a2 .* cos.(2f0 .* phase)
+end
+
+function blackman_haris_window_coeffs(ns::UnitRange{Int}, denom)
+    a0 = 0.35875f0
+        a1 = 0.48829f0
+    a2 = 0.14128f0
+    a3 = 0.01168f0
+    phase = 2f0 * Float32(π) .* Float32.(ns) ./ denom
+    return a0 .- a1 .* cos.(phase) .+ a2 .* cos.(2f0 .* phase) .- a3 .* cos.(3f0 .* phase)
+end
+
 function window_coeffs(fft_size::Int, window::WindowFunctions)
-    n = 0:fft_size - 1
+    ns = 0:fft_size - 1
     denom = Float32(fft_size - 1)
     if window == Hann
-        return hann_window_coeffs(n, denom)
+        return hann_window_coeffs(ns, denom)
     elseif window == Blackman
-        a0 = 0.42f0
-        a1 = 0.5f0
-        a2 = 0.08f0
-        phase = 2f0 * Float32(pi) .* Float32.(n) ./ denom
-        return a0 .- a1 .* cos.(phase) .+ a2 .* cos.(2f0 .* phase)
+        return blackman_window_coeffs(ns, denom)
     else
-        a0 = 0.35875f0
-        a1 = 0.48829f0
-        a2 = 0.14128f0
-        a3 = 0.01168f0
-        phase = 2f0 * Float32(pi) .* Float32.(n) ./ denom
-        return a0 .- a1 .* cos.(phase) .+ a2 .* cos.(2f0 .* phase) .- a3 .* cos.(3f0 .* phase)
+        return blackman_haris_window_coeffs(ns, denom)
     end
 end
 
@@ -129,14 +137,15 @@ function process_samples!(context::ViewContext{ComplexF32}, samples::AbstractVec
     return nothing
 end
 
-function CreateView(::Type{T}, inputSamplingRate::UInt64, numberOfSampling::UInt64, window::WindowFunctions;
-                    frame_size::Int = Int(numberOfSampling),
+function CreateView(::Type{T}, inputSamplingRate::UInt64, numberOfFFTSampling::UInt64, window::WindowFunctions;
+                    frame_size::Int = Int(numberOfFFTSampling),
                     poolsize::Int = 16,
                     title::AbstractString = "FFT View",
                     fmin::Float64 = -Float64(inputSamplingRate) / 2,
                     fmax::Float64 = Float64(inputSamplingRate) / 2,
                     window_size = (900, 480)) where {T}
-    fft_size = Int(numberOfSampling)
+
+    fft_size = Int(numberOfFFTSampling)
     fft_size < 2 && error("FFT size must be at least 2.")
     fmin >= fmax && error("Frequency range must satisfy fmin < fmax.")
     frame_size < 1 && error("Frame size must be at least 1.")
